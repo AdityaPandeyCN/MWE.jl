@@ -1,0 +1,19 @@
+name = "MWE"
+uuid = "5b9e2b3c-6a1f-4d0e-9c7a-3f2e8d1b4a60"
+authors = ["Aditya Pandey"]
+version = "0.1.0"
+
+[deps]
+Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
+Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
+
+[compat]
+Enzyme = "0.13"
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
