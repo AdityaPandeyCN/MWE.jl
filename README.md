@@ -1,10 +1,10 @@
-# MWE.jl
+# Shrink.jl
 
 Automatically shrink a failing `Enzyme.autodiff` call to a minimal working
 example.
 
 Enzyme bug reports usually start as a large script. Turning that into the
-ten-line reproducer a maintainer can act on is slow, manual work. MWE.jl
+ten-line reproducer a maintainer can act on is slow, manual work. Shrink.jl
 does it the way PyTorch's [FX minifier](https://pytorch.org/functorch/stable/notebooks/minifier.html)
 does: capture the failing call, record every intermediate value, then cut
 the program down piece by piece while checking after each cut that it still
@@ -15,7 +15,7 @@ fails the same way.
 Nothing in the script needs to change. Point `minify` at it:
 
 ```julia
-using MWE
+using Shrink
 minify("script.jl")
 ```
 
@@ -23,7 +23,7 @@ Every `autodiff` call in the script is hooked; the first one that throws is
 the one that gets reduced. The result is written next to the script:
 
 ```
-mwe_20260904-220429/
+shrink_20260904-220429/
 ├── repro.jl          # the reduced, standalone reproducer
 ├── checkpoints/      # every accepted intermediate step, each a valid reproducer
 ├── 0001.jl, 0001.log # every candidate that was tried, with its output
@@ -152,5 +152,5 @@ crashes and compile hangs are just failure classes like any other.
 
 ```
 julia --project -e 'using Pkg; Pkg.test()'
-MWE_E2E=1 julia --project -e 'using Pkg; Pkg.test()'   # also runs minify on the examples (~15 min)
+SHRINK_E2E=1 julia --project -e 'using Pkg; Pkg.test()'   # also runs minify on the examples (~15 min)
 ```

@@ -1,7 +1,7 @@
 "Copy of `p.defs` in which every assignment also records the values it binds, plus the statement-to-key map."
 function instrument(p::Program)
     keys = IdDict{Any,String}()
-    recorder = :(Main.MWE.record!)
+    recorder = :(Main.$(nameof(@__MODULE__)).record!)
     defs = map(enumerate(p.defs)) do (j, d)
         isfdef(d) && fname(d) !== nothing || return d
         n = 0

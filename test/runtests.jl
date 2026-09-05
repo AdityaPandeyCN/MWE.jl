@@ -1,5 +1,5 @@
-using Test, Enzyme, MWE
-using MWE: Class, PASS, classify, classify_run, normalize_key, Value, available, render, Store, type_note,
+using Test, Enzyme, Shrink
+using Shrink: Class, PASS, classify, classify_run, normalize_key, Value, available, render, Store, type_note,
            Program, Call, Arg, Captured, parse_script, normalize, hook_autodiff, capture, capture_gradient,
            entry, entry_called_elsewhere, stmts, fparams, is_assignment, assigned_names, uses,
            sub_blocks, all_statements, map_statements, call_source, primal_source, mode_source,
@@ -85,9 +85,9 @@ end
     defs = parse_script(SCRIPT)
     @test length(defs) == 6                                  # include inlined, docstring stripped
     @test all(d -> d isa Expr, defs)
-    @test count(MWE.isfdef, defs) == 3
+    @test count(Shrink.isfdef, defs) == 3
     @test Base.remove_linenums!(normalize(:(g(x) = x + 1))) == Base.remove_linenums!(:(function g(x) x + 1 end))
-    @test MWE.fname(normalize(:(h(x::T) where {T} = x))) == :h
+    @test Shrink.fname(normalize(:(h(x::T) where {T} = x))) == :h
     @test fparams(defs[4]) == [:x, :p]
     @test uses(:p, defs[4]) && !uses(:nope, defs[4])
     @test is_assignment(Meta.parse("a, b = f(x)")) && assigned_names(Meta.parse("a, b = f(x)")) == [:a, :b]
@@ -117,14 +117,14 @@ end
 @testset "capture" begin
     e = :(r = autodiff(Reverse, f, Active, Duplicated(x, dx), Const(p)))
     h = hook_autodiff(e)
-    @test h.args[2].args[1] == GlobalRef(MWE, :capture)
+    @test h.args[2].args[1] == GlobalRef(Shrink, :capture)
     @test h.args[2].args[2] == QuoteNode(e.args[2]) && h.args[2].args[3] == :autodiff
-    @test hook_autodiff(:(Enzyme.autodiff_deferred(Reverse, f, Const(x)))).args[1] == GlobalRef(MWE, :capture)
+    @test hook_autodiff(:(Enzyme.autodiff_deferred(Reverse, f, Const(x)))).args[1] == GlobalRef(Shrink, :capture)
     g = hook_autodiff(:(gradient(Reverse, f, x)))
-    @test g.args[1] == GlobalRef(MWE, :capture_gradient) && g.args[3] == :gradient
+    @test g.args[1] == GlobalRef(Shrink, :capture_gradient) && g.args[3] == :gradient
     @test hook_autodiff(:(foo(Reverse, f, x))).args[1] == :foo
     nested = hook_autodiff(:(autodiff(Reverse, y -> only(autodiff(Forward, f, Duplicated(y, w))), Active, Duplicated(y, dy))))
-    @test occursin("autodiff(Forward", string(nested)) && count("MWE.capture", string(nested)) == 1   # inner call untouched
+    @test occursin("autodiff(Forward", string(nested)) && count("Shrink.capture", string(nested)) == 1   # inner call untouched
 
     @test capture(:(x), +, 1, 2) == 3                            # not Enzyme's: called unchanged
     @test capture(e.args[2], autodiff, Reverse, sum, Active, Const([1.0])) === ((nothing,),)
@@ -137,7 +137,7 @@ end
     @test call_source(c) == "autodiff(Reverse, f, Active, Duplicated(x, dx), Const(p))"
     @test primal_source(c) == "f(x, p)"
     @test primal_source(c; copy = true) == "f(deepcopy(x), deepcopy(p))"
-    @test MWE.oneline("a\n    b\nc") == "a b c" && MWE.oneline("abcdef", 3) == "abc…"
+    @test Shrink.oneline("a\n    b\nc") == "a b c" && Shrink.oneline("abcdef", 3) == "abc…"
 
     @test capture_gradient(:(x), (m, f, x) -> 42, Reverse, sin, 1.0) == 42
     bad(x) = x[7]
@@ -149,10 +149,10 @@ end
 
 @testset "lift_lambda" begin
     p = program()
-    @test MWE.lift_lambda(p) === p
+    @test Shrink.lift_lambda(p) === p
     lam = Call(:autodiff, Reverse, :((x, p) -> sum(x) * p), Active, p.call.args)
-    q = MWE.lift_lambda(Program(p.defs, p.consts, lam, p.values))
-    @test q.call.f == :entry && MWE.fname(q.defs[end]) == :entry
+    q = Shrink.lift_lambda(Program(p.defs, p.consts, lam, p.values))
+    @test q.call.f == :entry && Shrink.fname(q.defs[end]) == :entry
     @test fparams(q.defs[end]) == [:x, :p] && entry(q) == length(q.defs)
     @test call_source(q.call) == "autodiff(Reverse, entry, Active, Duplicated(x, dx), Const(p))"
 end
@@ -187,7 +187,7 @@ end
     defs, keys = instrument(p)
     @test length(keys) == 4                                   # a, b, c in f; t in g
     @test any(k -> startswith(k, "f@"), values(keys))
-    @test occursin("Main.MWE.record!(\"f@4#1.a\", a)", string(defs[entry(p)]))
+    @test occursin("Main.Shrink.record!(\"f@4#1.a\", a)", string(defs[entry(p)]))
     @test p.defs[entry(p)] !== defs[entry(p)]                  # original untouched
 
     q = looped()
@@ -197,22 +197,22 @@ end
 
     # instrumented code can itself be differentiated: recording is inactive
     # and the instrumented statement keeps the assignment's value
-    empty!(MWE.RECORDS)
+    empty!(Shrink.RECORDS)
     rec(x) = begin
-        y = (y = 2x; MWE.record!("k.y", y); y)
+        y = (y = 2x; Shrink.record!("k.y", y); y)
         y * x
     end
     @test only(autodiff(Forward, rec, Duplicated, Duplicated(3.0, 1.0))) == 12.0
     @test autodiff(Reverse, rec, Active, Active(3.0))[1][1] == 12.0
-    @test MWE.RECORDS["k.y"] == 6.0
-    empty!(MWE.RECORDS)
+    @test Shrink.RECORDS["k.y"] == 6.0
+    empty!(Shrink.RECORDS)
 end
 
 @testset "search orders" begin
     @test bisect_order(7) == [4, 2, 6, 1, 3, 5, 7]
     @test bisect_order(0) == Int[]
     @test granularities(5) == [4, 2, 1]
-    @test MWE.chunks([2, 3, 5]) == [[2, 3], [5], [2], [3]]
+    @test Shrink.chunks([2, 3, 5]) == [[2, 3], [5], [2], [3]]
     @test targets(1000) == [1, 500, 999] && targets(2) == [1]
     @test take(collect(reshape(1:12, 3, 4)), 2, 2) == [1 4; 2 5; 3 6]
 end
@@ -300,11 +300,11 @@ end
     @test checked_autodiff(Reverse, g, Active, Duplicated(x, dx), Const(3.0)) !== nothing
     @test dx == [8.0, 8.0]
 
-    MWE.CHECK[] = :correctness                                  # capture snapshots arguments before the call runs
+    Shrink.CHECK[] = :correctness                                  # capture snapshots arguments before the call runs
     dx = zero(x)
     half(x, p) = g(x, p) + wrong(x, p)                          # Enzyme sees p per entry, truth is 2p
     err = try capture(:(autodiff(Reverse, half, Active, Duplicated(x, dx), Const(3.0))), autodiff, Reverse, half, Active, Duplicated(x, dx), Const(3.0)); nothing catch e; e end
-    MWE.CHECK[] = :error
+    Shrink.CHECK[] = :error
     @test err isa Captured && err.err isa WrongGradient
     @test err.tail[2].dval == [0.0, 0.0] && dx == [3.0, 3.0]
     c = program().call
@@ -329,16 +329,16 @@ end
     setup = "using Enzyme\nf(x) = (x[2]; x[1])\nx = [1.0]\ndx = zero(x)\n"
     call = "autodiff(Reverse, f, Active, Duplicated(x, dx))"
     log = tempname()
-    @test MWE.worker_query("q1", setup, call, log, "f(deepcopy(x))").kind == :setup
-    @test MWE.worker_query("q2", setup, call, log).kind == :BoundsError
+    @test Shrink.worker_query("q1", setup, call, log, "f(deepcopy(x))").kind == :setup
+    @test Shrink.worker_query("q2", setup, call, log).kind == :BoundsError
     # the primal runs on copies: a mutating primal does not change what the call sees
     setup = "using Enzyme\nf(x) = (x[1] += 1; x[1]^2)\nx = [1.0]\ndx = zero(x)\n"
     call = "autodiff(Reverse, f, Active, Duplicated(x, dx)); dx[1] == 4.0 || error(\"saw mutated x\")"
-    @test MWE.worker_query("q3", setup, call, log, "f(deepcopy(x))") == PASS
+    @test Shrink.worker_query("q3", setup, call, log, "f(deepcopy(x))") == PASS
 end
 
-# Slow: runs the whole pipeline on the examples.  MWE_E2E=1 julia --project -e 'using Pkg; Pkg.test()'
-if get(ENV, "MWE_E2E", "") != ""
+# Slow: runs the whole pipeline on the examples.  SHRINK_E2E=1 julia --project -e 'using Pkg; Pkg.test()'
+if get(ENV, "SHRINK_E2E", "") != ""
     @testset "end to end: $example" for (example, check, target, entryname, maxstmts) in
             [("runtime_activity", :error, "EnzymeRuntimeActivityError", :pick, 2),
              ("wrong_gradient", :correctness, "WrongGradient", :loss, 3)]
@@ -348,7 +348,7 @@ if get(ENV, "MWE_E2E", "") != ""
         repro = minify(script; check, workers = 2)
         @test repro !== nothing
         defs = parse_script(repro)
-        d = only(filter(d -> MWE.isfdef(d) && MWE.fname(d) == entryname, defs))
+        d = only(filter(d -> Shrink.isfdef(d) && Shrink.fname(d) == entryname, defs))
         @test length(all_statements(d.args[2])) <= maxstmts
         log = joinpath(dir, "repro.log")
         run(pipeline(ignorestatus(`$(Base.julia_cmd()) --project=$(Base.active_project()) $repro`); stdout = log, stderr = log))

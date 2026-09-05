@@ -292,7 +292,7 @@ function write_program(path::String, p::Program, class::Class, original::String,
     setup, call, store = render(p, "joinpath(@__DIR__, $(repr(basename(stem) * "_data.jls")))", check)
     isempty(store.entries) || serialize(stem * "_data.jls", store.entries)
     open(path, "w") do io
-        println(io, "# Reduced automatically by MWE.jl — Julia $VERSION, Enzyme $(pkgversion(Enzyme))")
+        println(io, "# Reduced automatically by Shrink.jl — Julia $VERSION, Enzyme $(pkgversion(Enzyme))")
         comment(io, "Failure: ", string(class))
         comment(io, "Reduced from: ", oneline(original))
         println(io)
@@ -356,7 +356,7 @@ function hook_autodiff(e)
         name = callee_name(e.args[1])
         hook = name in (:autodiff, :autodiff_deferred) ? :capture :
                name == :gradient ? :capture_gradient : nothing
-        hook === nothing || return Expr(:call, GlobalRef(MWE, hook), QuoteNode(e), e.args...)
+        hook === nothing || return Expr(:call, GlobalRef(@__MODULE__, hook), QuoteNode(e), e.args...)
     end
     return Expr(e.head, map(hook_autodiff, e.args)...)
 end

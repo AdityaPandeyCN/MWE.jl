@@ -2,14 +2,14 @@
     minify(file; check = :error, workers = default_workers(), timeout = 600.0) -> path or nothing
 
 Reduce the first failing `autodiff` call in the script `file` to a minimal reproducer,
-written to `mwe_<time>/repro.jl` next to it; `nothing` if no call failed.  `check` is
+written to `shrink_<time>/repro.jl` next to it; `nothing` if no call failed.  `check` is
 `:error` (the call throws) or `:correctness` (the gradient disagrees with finite differences).
 """
 function minify(file::AbstractString; check::Symbol = :error, workers = default_workers(), timeout = 600.0)
     check in (:error, :correctness) || error("check must be :error or :correctness")
     file = abspath(file)
     isfile(file) || error("no such file: $file")
-    dir = mkpath(joinpath(dirname(file), "mwe_" * Libc.strftime("%Y%m%d-%H%M%S", time())))
+    dir = mkpath(joinpath(dirname(file), "shrink_" * Libc.strftime("%Y%m%d-%H%M%S", time())))
     mkpath(joinpath(dir, "checkpoints"))
     defs = parse_script(file)
 

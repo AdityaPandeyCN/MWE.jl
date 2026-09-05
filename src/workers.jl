@@ -22,11 +22,11 @@ function Pool(dir; cwd = pwd(), workers = default_workers(), project = Base.acti
     return pool
 end
 
-"Start `n` workers with Enzyme and MWE loaded, in the pool's working directory."
+"Start `n` workers with Enzyme and this package loaded, in the pool's working directory."
 function spawn(pool::Pool, n::Int)
     pids = addprocs(n; exeflags = "--project=$(pool.project)", dir = pool.cwd)
     @sync for pid in pids
-        @async remotecall_wait(Core.eval, pid, Main, :(using Enzyme, MWE))
+        @async remotecall_wait(Core.eval, pid, Main, Expr(:using, Expr(:., :Enzyme), Expr(:., nameof(@__MODULE__))))
     end
     return pids
 end

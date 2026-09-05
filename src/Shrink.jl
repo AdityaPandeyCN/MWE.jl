@@ -1,5 +1,5 @@
 "Shrink a failing `Enzyme.autodiff` call to a minimal reproducer; see [`minify`](@ref)."
-module MWE
+module Shrink
 
 using Enzyme
 using Distributed
