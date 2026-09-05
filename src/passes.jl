@@ -189,7 +189,7 @@ function simplify_result(p::Program)
     for (j, d) in enumerate(p.defs)
         isfdef(d) && fname(d) !== nothing || continue
         s = stmts(d)
-        isempty(s) || last(s) in LITERAL_RETURNS && continue
+        (isempty(s) || last(s) in LITERAL_RETURNS) && continue
         for new in LITERAL_RETURNS
             # the entry's result feeds the return activity: `nothing` is only ever `Const`
             j == e && new.args[1] === nothing && !(p.call.ret in (Const, nothing)) && continue

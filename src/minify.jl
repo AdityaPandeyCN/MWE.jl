@@ -1,11 +1,14 @@
 """
-    minify(file; check = :error, workers = default_workers(), timeout = 600.0) -> path or nothing
+    minify(file; check = :error, workers = default_workers(), timeout = 600.0, project = Base.active_project()) -> path or nothing
 
 Reduce the first failing `autodiff` call in the script `file` to a minimal reproducer,
 written to `shrink_<time>/repro.jl` next to it; `nothing` if no call failed.  `check` is
 `:error` (the call throws) or `:correctness` (the gradient disagrees with finite differences).
+Candidates run in the environment `project`: pass the script's own project when it differs
+from the active one, so the failure is reduced against the Enzyme it occurs with.
 """
-function minify(file::AbstractString; check::Symbol = :error, workers = default_workers(), timeout = 600.0)
+function minify(file::AbstractString; check::Symbol = :error, workers = default_workers(), timeout = 600.0,
+                project::AbstractString = Base.active_project())
     check in (:error, :correctness) || error("check must be :error or :correctness")
     file = abspath(file)
     isfile(file) || error("no such file: $file")
@@ -14,7 +17,7 @@ function minify(file::AbstractString; check::Symbol = :error, workers = default_
     defs = parse_script(file)
 
     println("starting $workers workers")
-    pool = Pool(dir; cwd = dirname(file), workers, timeout)
+    pool = Pool(dir; cwd = dirname(file), workers, project, timeout)
     try
         r = try
             remote(pool, 1, worker_capture, defs, joinpath(dir, "capture.log"), check)

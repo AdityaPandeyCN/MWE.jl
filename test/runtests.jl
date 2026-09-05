@@ -79,6 +79,8 @@ end
     @test sub.data isa Vector{Float64} && sub.data == [1.0, 2.0]
     @test startswith(type_note(sub), "   # was SubArray")
     @test Value(1:3, Main).data == [1, 2, 3]
+    @test render(Value(big"1.5", Main), "v", Store()) == "parse(BigFloat, \"1.5\")"   # `repr` alone reads back as Float64
+    @test render(Value(1.5f0, Main), "v", Store()) == "1.5f0" && render(Value(-2, Main), "v", Store()) == "-2"
 end
 
 @testset "parse_script" begin
@@ -95,6 +97,8 @@ end
     split = mktempdir()
     write(joinpath(split, "s.jl"), "using Enzyme, LinearAlgebra\nimport Enzyme: Reverse, Forward\n")
     @test parse_script(joinpath(split, "s.jl")) == [:(using Enzyme), :(using LinearAlgebra), :(import Enzyme: Reverse, Forward)]
+    write(joinpath(split, "d.jl"), "here = @__DIR__\n")
+    @test Core.eval(Module(), only(parse_script(joinpath(split, "d.jl")))) == split   # a macro keeps its own line node
 end
 
 @testset "nested statements" begin
@@ -208,6 +212,10 @@ end
     @test only(autodiff(Forward, rec, Duplicated, Duplicated(3.0, 1.0))) == 12.0
     @test autodiff(Reverse, rec, Active, Active(3.0))[1][1] == 12.0
     @test Shrink.RECORDS["k.y"] == 6.0
+    a = [1.0]
+    Shrink.record!("k.a", a)
+    a[1] = 2.0
+    @test Shrink.RECORDS["k.a"] == [1.0]                         # mutation after the assignment does not reach the record
     empty!(Shrink.RECORDS)
 end
 
@@ -271,6 +279,8 @@ end
     # the entry cannot return `nothing` under an `Active` return activity
     @test !("f: return nothing" in first.(sr)) && "f: return 0.0" in first.(sr)
     @test "f: return nothing" in first.(simplify_result(program(ret = Const)))
+    hollow = Program(Any[normalize(Base.remove_linenums!(:(function e() end)))], Pair{Symbol,Value}[], p.call, p.values)
+    @test isempty(simplify_result(hollow))
 
     r = remove_defs(p)
     @test first.(r) == ["remove definitions 2,3", "remove definition 5", "remove definition 2", "remove definition 3"]

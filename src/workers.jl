@@ -119,8 +119,8 @@ end
 "First recorded value of every instrumented statement, by key; see [`record!`](@ref)."
 const RECORDS = Dict{String,Any}()
 
-"Keep the first value seen for `key`, so statements in loops record their first iteration."
-record!(key::String, v) = (haskey(RECORDS, key) || (RECORDS[key] = v); v)
+"Keep a copy of the first value seen for `key`: statements in loops record their first iteration, and later in-place mutation does not reach the record."
+record!(key::String, v) = (haskey(RECORDS, key) || (RECORDS[key] = deepcopy(v)); v)
 
 # recording is a side effect Enzyme runs but never differentiates
 Enzyme.EnzymeRules.inactive(::typeof(record!), args...) = nothing

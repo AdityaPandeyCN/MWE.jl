@@ -38,8 +38,10 @@ differences":
 minify("script.jl"; check = :correctness)
 ```
 
-Options: `workers` (concurrent worker processes, default half the cores)
-and `timeout` (seconds per candidate, default 600).
+Options: `workers` (concurrent worker processes, default half the cores),
+`timeout` (seconds per candidate, default 600) and `project` (the environment
+candidates run in, default the active project; pass the script's own project
+when it differs, so the failure is reduced against the Enzyme it occurs with).
 
 ## Example
 

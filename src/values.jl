@@ -48,10 +48,17 @@ Store(ref = "STORE") = Store(ref, Dict{String,Any}())
 function render(v::Value, name::String, store::Store)
     v.text === nothing || return v.text
     v.data === nothing && error("value $name of type $(v.type) was not captured")
-    s = repr(v.data)
+    s = v.data isa Number ? number_source(v.data, v.type) : repr(v.data)
     length(s) <= LITERAL_MAX_CHARS && return s
     store.entries[name] = v.data
     return "$(store.ref)[$(repr(name))]"
+end
+
+"Source for a number: its `repr`, unless that reads back as another type (`repr(big\"1.5\")` is the `Float64` literal `1.5`)."
+function number_source(x::Number, type::String)
+    s = repr(x)
+    lit = Meta.parse(s)
+    return lit isa Number && typeof(lit) != typeof(x) ? "parse($type, $(repr(s)))" : s
 end
 
 "Whether a shadow can be written as `zero(primal)`."
