@@ -44,8 +44,8 @@ end
 "Fixed unit vectors that look random, so runs are reproducible without a RNG."
 function pseudo_random_directions(x::AbstractArray{T}, n) where {T}
     map(1:n) do k
-        v = T[sin(T(12.9898) * k * j + T(78.233)) for j in 1:length(x)]
-        reshape(v ./ sqrt(sum(abs2, v)), size(x))
+        v = [sin(12.9898 * k * j + 78.233) for j in 1:length(x)]     # Float64: Float32 loses the phase for large j
+        reshape(T.(v ./ sqrt(sum(abs2, v))), size(x))
     end
 end
 

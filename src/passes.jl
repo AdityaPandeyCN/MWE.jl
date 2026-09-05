@@ -55,12 +55,15 @@ function taken_names(p::Program)
     return names
 end
 
+"Real or complex floating point: what Enzyme differentiates."
+isfloatlike(::Type{T}) where {T} = T <: Union{AbstractFloat,Complex{<:AbstractFloat}}
+
 "The input standing in for a recorded intermediate: float arrays `Duplicated`, floats `Active` (`Duplicated` in forward mode), else `Const`."
 function placeholder_arg(name::Symbol, v::Value, mode::Enzyme.Mode)
     d = v.data
-    if d isa Array{<:AbstractFloat}
+    if d isa Array && isfloatlike(eltype(d))
         return Arg(:Duplicated, name, v, [Value(zero(d), nothing, v.type)])
-    elseif d isa AbstractFloat
+    elseif d isa Number && isfloatlike(typeof(d))
         return mode isa Enzyme.ReverseMode ? Arg(:Active, name, v, Value[]) :
                                              Arg(:Duplicated, name, v, [Value(one(d), nothing, v.type)])
     end
@@ -90,8 +93,12 @@ function remove_suffix(p::Program)
             y
         elseif v.data isa AbstractFloat
             y
+        elseif v.data isa Complex{<:AbstractFloat}
+            :(abs2($y))                           # an Active return must be real
         elseif v.data isa Array{<:AbstractFloat}
             :(sum($y))
+        elseif v.data isa Array{<:Complex{<:AbstractFloat}}
+            :(sum(abs2, $y))
         else
             continue
         end
@@ -178,11 +185,14 @@ const LITERAL_RETURNS = (Expr(:return, nothing), Expr(:return, 0.0))
 "Replace each function's last statement by `return nothing` or `return 0.0`; a literal return is terminal."
 function simplify_result(p::Program)
     out = Proposals()
+    e = entry(p)
     for (j, d) in enumerate(p.defs)
         isfdef(d) && fname(d) !== nothing || continue
         s = stmts(d)
         isempty(s) || last(s) in LITERAL_RETURNS && continue
         for new in LITERAL_RETURNS
+            # the entry's result feeds the return activity: `nothing` is only ever `Const`
+            j == e && new.args[1] === nothing && !(p.call.ret in (Const, nothing)) && continue
             push!(out, "$(fname(d)): return $(repr(new.args[1]))" => replace_def(p, j, with_body(d, [s[1:end-1]; new])))
         end
     end

@@ -330,7 +330,8 @@ end
 
 "Hook for reverse-mode `Enzyme.gradient` calls, captured in `autodiff` form."
 function capture_gradient(expr, fn, mode, f, xs...; kw...)
-    fn === Enzyme.gradient && mode isa ReverseMode && isempty(kw) && !Enzyme.within_autodiff() ||
+    fn === Enzyme.gradient && mode isa ReverseMode && isempty(kw) && !Enzyme.within_autodiff() &&
+        all(x -> x isa Number || x isa AbstractArray, xs) ||
         return fn(mode, f, xs...; kw...)
     anns = map(x -> x isa Number ? Active(x) : Duplicated(x, Enzyme.make_zero(x)), xs)
     saved = deepcopy(anns)

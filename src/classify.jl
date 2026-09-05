@@ -13,7 +13,7 @@ Base.show(io::IO, c::Class) = print(io, c.kind, isempty(c.detail) ? "" : ": " * 
 "The `Class` of a run that raised no error."
 const PASS = Class(:pass)
 
-"`line` with SSA names, hex literals and numbers replaced by placeholders."
+"`line` with SSA names, hex literals and numbers replaced by placeholders; two failures differing only in a number share a key."
 normalize_key(line::AbstractString) =
     replace(line, r"%\d+" => "%N", r"0x[0-9a-fA-F]+" => "0xX", r"\d+" => "N")
 

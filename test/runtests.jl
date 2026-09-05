@@ -145,6 +145,9 @@ end
     @test err isa Captured && err.err isa BoundsError
     @test err.expr == :(autodiff(Reverse, bad, Active, Duplicated(x))) && err.tail[1] === Active && err.tail[2] isa Duplicated
     @test call_source(Call(err, Main)) == "autodiff(Reverse, bad, Active, Duplicated(x, dx))"
+    # an argument the hook cannot annotate (a tuple) goes to the plain call, never to a capture
+    err = try capture_gradient(:(gradient(Reverse, first, t)), Enzyme.gradient, Reverse, first, (1.0, 2.0)); nothing catch err; err end
+    @test !(err isa Captured)
 end
 
 @testset "lift_lambda" begin
@@ -227,6 +230,14 @@ end
     @test length(stmts(s[2].second.defs[entry(p)])) == 2
     q = s[1].second                                            # truncated after b ...
     @test first.(remove_suffix(q)) == ["f: keep statements 1:1, return sum(a)"]   # ... is not proposed again
+    z = program()                                              # complex intermediates return a real
+    zs = stmts(z.defs[entry(z)])
+    z.values[zs[1]] = [Value(ComplexF64[1.0 + im], Main)]
+    z.values[zs[2]] = [Value(1.0 + 2.0im, Main)]
+    @test first.(remove_suffix(z)) == ["f: keep statements 1:2, return abs2(b)", "f: keep statements 1:1, return sum(abs2, a)"]
+    @test Shrink.placeholder_arg(:z, Value(ComplexF64[1.0 + im], Main), Reverse).kind == :Duplicated
+    @test Shrink.placeholder_arg(:z, Value(1.0 + im, Main), Reverse).kind == :Active
+    @test Shrink.placeholder_arg(:z, Value([1, 2], Main), Reverse).kind == :Const
 
     ph = placeholder_statements(p)
     @test first(first.(ph)) == "f: statements 1:2 of 3"        # coarsest chunk of the entry first
@@ -257,6 +268,9 @@ end
     # a literal return is terminal: no proposal swaps `nothing` for `0.0` and back
     @test !any(l -> startswith(l, "g:"), first.(simplify_result(sr[1].second)))
     @test !any(l -> startswith(l, "g:"), first.(simplify_result(sr[2].second)))
+    # the entry cannot return `nothing` under an `Active` return activity
+    @test !("f: return nothing" in first.(sr)) && "f: return 0.0" in first.(sr)
+    @test "f: return nothing" in first.(simplify_result(program(ret = Const)))
 
     r = remove_defs(p)
     @test first.(r) == ["remove definitions 2,3", "remove definition 5", "remove definition 2", "remove definition 3"]
@@ -341,7 +355,8 @@ end
 if get(ENV, "SHRINK_E2E", "") != ""
     @testset "end to end: $example" for (example, check, target, entryname, maxstmts) in
             [("runtime_activity", :error, "EnzymeRuntimeActivityError", :pick, 2),
-             ("wrong_gradient", :correctness, "WrongGradient", :loss, 3)]
+             ("wrong_gradient", :correctness, "WrongGradient", :loss, 3),
+             ("issue_3523", :error, "EnzymeNoTypeError", :entry, 1)]
         dir = mktempdir()
         script = joinpath(dir, "script.jl")
         cp(joinpath(@__DIR__, "..", "examples", example, "script.jl"), script)
