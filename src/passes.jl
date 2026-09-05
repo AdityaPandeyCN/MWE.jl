@@ -339,8 +339,14 @@ function unbatch(p::Program)
     return out
 end
 
-"Extents to try for a dimension of extent `n`: 1, half, `n - 1`."
-targets(n) = unique((1, cld(n, 2), n - 1))
+"""
+    targets(n) -> Vector{Int}
+
+Extents to try for a dimension of extent `n`: 1, then `n` less a half, a quarter, an eighth,
+... down to `n - 1`.  The reducer re-runs the pass from whichever is accepted, so the gap to
+the smallest extent that still fails at least halves each round.
+"""
+targets(n) = unique([1; [n - n ÷ 2^k for k in 1:floor(Int, log2(n))]])
 
 shrink_arg(a::Arg, dim, k) = Arg(a.kind, a.name, mapdata(x -> take(x, dim, k), a.val),
                                  [mapdata(x -> take(x, dim, k), s) for s in a.shadows])

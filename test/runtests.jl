@@ -224,7 +224,8 @@ end
     @test bisect_order(0) == Int[]
     @test granularities(5) == [4, 2, 1]
     @test Shrink.chunks([2, 3, 5]) == [[2, 3], [5], [2], [3]]
-    @test targets(1000) == [1, 500, 999] && targets(2) == [1]
+    @test targets(1000) == [1, 500, 750, 875, 938, 969, 985, 993, 997, 999]
+    @test targets(2) == [1] && targets(5) == [1, 3, 4]
     @test take(collect(reshape(1:12, 3, 4)), 2, 2) == [1 4; 2 5; 3 6]
 end
 
