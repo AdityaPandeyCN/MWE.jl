@@ -1,4 +1,13 @@
-"Identity of a failure: `kind` (exception type, `:pass`, `:setup`, `:crash`, `:timeout`) and `key`; `detail` is for display only."
+"""
+Identity of a failure: `kind` (exception type, `:pass`, `:setup`, `:crash`, `:timeout`) and `key`; `detail` is for display only.
+
+Two runs are the same failure when `kind` and `key` agree.  The key is empty for Enzyme's
+typed exceptions, whose messages are mostly IR that changes with every edit, so the type
+alone identifies them.  For everything else (`ErrorException`, `MethodError`,
+`EnzymeInternalError`, crashes) it is the normalised first line of the message, so that
+two different internal errors are not merged while sizes changing under `shrink_arrays`
+do not split one.
+"""
 struct Class
     kind::Symbol
     key::String

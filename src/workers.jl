@@ -1,4 +1,12 @@
-"Persistent workers running candidates in fresh modules; dead or timed-out workers are replaced, each recycled after `RECYCLE_AFTER` candidates."
+"""
+Persistent workers running candidates in fresh modules; dead or timed-out workers are replaced, each recycled after `RECYCLE_AFTER` candidates.
+
+A worker loads Enzyme once, so its compiler is warm for every candidate after the first.
+Each candidate is evaluated in a module of its own so that a removed definition is really
+gone rather than shadowed by an earlier candidate's.  Modules can never be freed, so a worker
+is replaced after `RECYCLE_AFTER` candidates to bound memory growth.  Workers run in `cwd`,
+the script's directory, so relative paths in the script resolve.
+"""
 mutable struct Pool
     dir::String
     cwd::String

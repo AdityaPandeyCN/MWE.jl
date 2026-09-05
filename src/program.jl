@@ -17,7 +17,13 @@ struct Call
     args::Vector{Arg}
 end
 
-"What is being reduced: top-level `defs`, placeholder `consts`, the `call`, and recorded `values` keyed by statement object."
+"""
+What is being reduced: top-level `defs`, placeholder `consts`, the `call`, and recorded `values` keyed by statement object.
+
+`values` is an `IdDict` keyed by the statement `Expr` itself rather than by position:
+passes rebuild bodies from the same statement objects, so a statement keeps its recorded
+values through every deletion, reordering and change of nesting without renumbering.
+"""
 struct Program
     defs::Vector{Any}
     consts::Vector{Pair{Symbol,Value}}
@@ -315,7 +321,16 @@ end
 "`:error` or `:correctness`: which failures the run looks for; set on the workers."
 const CHECK = Ref(:error)
 
-"Hook for `autodiff`/`autodiff_deferred`: run the real call and rethrow a failure as `Captured` with copies of the arguments."
+"""
+Hook for `autodiff`/`autodiff_deferred`: run the real call and rethrow a failure as `Captured` with copies of the arguments.
+
+The arguments are `deepcopy`d before the call because `autodiff` accumulates gradients into
+the shadows and the primal may mutate its inputs; the reproducer must start from the values
+the user passed in, not from what the failing call left behind.  `fn` is the callee as
+resolved at the call site, so a user function that happens to be named `autodiff` is simply
+called.  Inside code that is itself being differentiated (`within_autodiff`) the hook is a
+plain call, so a nested `autodiff` is compiled exactly as written.
+"""
 function capture(expr, fn, mode, f, tail...; kw...)
     fn in (Enzyme.autodiff, Enzyme.autodiff_deferred) && !Enzyme.within_autodiff() ||
         return fn(mode, f, tail...; kw...)

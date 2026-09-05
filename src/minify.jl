@@ -49,14 +49,29 @@ function minify(file::AbstractString; check::Symbol = :error, workers = default_
     end
 end
 
-"Runs candidates on the pool and returns their failure classes; with `primal`, a candidate whose primal fails is `:setup`."
+"""
+Runs candidates on the pool and returns their failure classes; with `primal`, a candidate whose primal fails is `:setup`.
+
+A candidate is identified by its rendered source and stored data (see [`candidate_key`](@ref)),
+and one already run answers from `seen`: passes re-run to a fixpoint re-propose what an
+earlier iteration rejected.  A batch of identical programs, as in [`sanity`](@ref), still
+runs in full since its members are queried concurrently.
+"""
 struct Oracle
     pool::Pool
     dir::String
     check::Symbol
     primal::Bool
+    seen::Dict{UInt,Tuple{String,Class}}
 end
-Oracle(pool::Pool, dir::String, check::Symbol) = Oracle(pool, dir, check, false)
+Oracle(pool::Pool, dir::String, check::Symbol, primal::Bool = false) =
+    Oracle(pool, dir, check, primal, Dict{UInt,Tuple{String,Class}}())
+
+"Placeholder for the store path in a candidate's rendered setup, so the source is the same whichever id it gets."
+const STORE_PATH = "__STORE_PATH__"
+
+"Identity of a candidate: its rendered setup and call, plus the stored data the source refers to by name."
+candidate_key(setup::String, call::String, store::Store) = hash((setup, call, store.entries))
 
 function (o::Oracle)(programs::AbstractVector{Program})
     results = Vector{Tuple{String,Class}}(undef, length(programs))
@@ -71,11 +86,15 @@ end
 
 "Run one candidate; anything unexpected is `:setup`, so one bad candidate cannot abort the run."
 function query(o::Oracle, slot::Int, p::Program)
-    o.pool.count += 1
-    id = lpad(o.pool.count, 4, '0')
-    base = joinpath(o.dir, id)
+    id = "----"
     try
-        setup, call, store = render(p, repr(base * "_data.jls"), o.check)
+        setup, call, store = render(p, STORE_PATH, o.check)
+        key = candidate_key(setup, call, store)
+        haskey(o.seen, key) && return o.seen[key]
+        o.pool.count += 1
+        id = lpad(o.pool.count, 4, '0')
+        base = joinpath(o.dir, id)
+        setup = replace(setup, STORE_PATH => repr(base * "_data.jls"))
         isempty(store.entries) || serialize(base * "_data.jls", store.entries)
         write(base * ".jl", setup, call, "\n")
 
@@ -85,6 +104,7 @@ function query(o::Oracle, slot::Int, p::Program)
             detail = crash_detail(read(base * ".log", String))
             class = Class(:crash, normalize_key(detail), detail)
         end
+        o.seen[key] = (id, class)
         return id, class
     catch err
         msg = sprint(showerror, err)
@@ -131,7 +151,13 @@ function minimize(p::Program, oracle::Oracle, target::Class, dir::String, origin
     end
 end
 
-"The first proposal, in order, whose class equals `target`; `nothing` if none."
+"""
+The first proposal, in order, whose class equals `target`; `nothing` if none.
+
+Proposals are queried in batches of one per worker, and a batch always runs to completion
+even when an early member is accepted: the result is the first acceptable proposal in
+proposal order, not whichever worker finished first, so a run is reproducible.
+"""
 function first_accepted(proposals::Proposals, oracle::Oracle, target::Class)
     for batch in Iterators.partition(proposals, length(oracle.pool.pids))
         results = oracle(last.(batch))

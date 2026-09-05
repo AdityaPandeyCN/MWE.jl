@@ -1,5 +1,5 @@
 using Test, Enzyme, Shrink
-using Shrink: Class, PASS, classify, classify_run, normalize_key, Value, available, render, Store, type_note,
+using Shrink: with, Class, PASS, classify, classify_run, normalize_key, Value, available, render, Store, type_note,
            Program, Call, Arg, Captured, parse_script, normalize, hook_autodiff, capture, capture_gradient,
            entry, entry_called_elsewhere, stmts, fparams, is_assignment, assigned_names, uses,
            sub_blocks, all_statements, map_statements, call_source, primal_source, mode_source,
@@ -336,6 +336,18 @@ end
     @test first.(s) == ["dims with extent 4 → 1", "dims with extent 4 → 2", "dims with extent 4 → 3"]
     a = s[1].second.call.args[1]
     @test a.val.data == [1.0] && a.shadows[1].data == [0.0]
+end
+
+@testset "candidate key" begin
+    p = program()
+    k(q) = Shrink.candidate_key(render(q, Shrink.STORE_PATH)...)
+    @test k(p) == k(program())                                 # same program, same key
+    @test k(p) != k(only(simplify_return(p)).second)
+    big = with(p; call = with(p.call; args = [Arg(:Duplicated, :x, Value(zeros(200), Main), [Value(zeros(200), Main)]), p.call.args[2]]))
+    setup, _, store = render(big, Shrink.STORE_PATH)
+    @test !isempty(store.entries) && occursin(Shrink.STORE_PATH, setup)
+    big2 = with(p; call = with(p.call; args = [Arg(:Duplicated, :x, Value(ones(200), Main), [Value(zeros(200), Main)]), p.call.args[2]]))
+    @test k(big) != k(big2)                                    # same source, different stored data
 end
 
 @testset "oracle precondition" begin

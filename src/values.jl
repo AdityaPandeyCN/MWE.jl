@@ -1,4 +1,12 @@
-"A recorded value: numeric `data` (numbers and `Array`s; other arrays are collected) or a source literal `text`; `type` is what it was."
+"""
+A recorded value: numeric `data` (numbers and `Array`s; other arrays are collected) or a source literal `text`; `type` is what it was.
+
+Only these two representations exist because values cross process boundaries: an object of
+a user-defined type is a different type in every candidate module and cannot be serialised
+between them, but a number, an `Array` of numbers, or a source literal that `repr`
+round-trips can.  Anything else (`data === nothing && text === nothing`) is not available
+as a placeholder.
+"""
 struct Value
     data::Union{Nothing,Number,Array{<:Number}}
     text::Union{Nothing,String}

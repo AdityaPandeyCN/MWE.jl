@@ -1,4 +1,11 @@
-"Copy of `p.defs` in which every assignment also records the values it binds, plus the statement-to-key map."
+"""
+Copy of `p.defs` in which every assignment also records the values it binds, plus the statement-to-key map.
+
+The analogue of the FX minifier's `ConcreteProp`: one run of the primal with every
+assignment recorded gives the value of every intermediate, which is what lets a statement be
+replaced by an input holding its value rather than merely deleted, so downstream code stays
+type-correct.  A statement in a loop records its first iteration.
+"""
 function instrument(p::Program)
     keys = IdDict{Any,String}()
     recorder = :(Main.$(nameof(@__MODULE__)).record!)
