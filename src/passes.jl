@@ -1,5 +1,10 @@
-# A pass proposes simpler programs along one axis, as `label => program` pairs, coarse cuts first.
+# A pass proposes simpler programs along one axis; the reducer keeps the first that still fails the same way.
 
+"""
+    Proposals
+
+What a pass returns: `label => program` pairs in the order to try them, coarse cuts first.
+"""
 const Proposals = Vector{Pair{String,Program}}
 
 # ---- helpers ----------------------------------------------------------------
@@ -10,7 +15,12 @@ replace_arg(c::Call, i, a) = with(c; args = [j == i ? a : c.args[j] for j in eac
 "Chunk sizes for delta debugging over `n` items: powers of two, largest first."
 granularities(n) = n < 1 ? Int[] : [2^k for k in floor(Int, log2(n)):-1:0]
 
-"Consecutive chunks of `items` at every granularity, coarsest first, without duplicates."
+"""
+    chunks(items) -> Vector{Vector}
+
+Consecutive runs of `items` at every granularity, coarsest first, each listed once: the
+schedule of delta debugging.  `chunks([2, 3, 5])` is `[[2, 3], [5], [2], [3]]`.
+"""
 function chunks(items::AbstractVector)
     seen = Set{Vector{eltype(items)}}()
     out = Vector{eltype(items)}[]
@@ -21,7 +31,7 @@ function chunks(items::AbstractVector)
     return out
 end
 
-"`1:n` in binary-search order."
+"`1:n` in binary-search order: `bisect_order(7)` is `[4, 2, 6, 1, 3, 5, 7]`."
 function bisect_order(n)
     order = Int[]
     queue = [(1, n)]
@@ -35,7 +45,7 @@ function bisect_order(n)
     return order
 end
 
-"A name based on `base` not in `taken`."
+"`base` if not in `taken`, else the first of `base_2`, `base_3`, ... that is not."
 function fresh(base::Symbol, taken)
     name, k = base, 1
     while name in taken
@@ -45,7 +55,7 @@ function fresh(base::Symbol, taken)
     return name
 end
 
-"Every symbol bound at top level of `p`: argument names, constants, function names."
+"Every name bound at top level of `p`: argument names, placeholder constants, function names."
 function taken_names(p::Program)
     names = Set{Symbol}(a.name for a in p.call.args)
     union!(names, first.(p.consts))
@@ -58,7 +68,12 @@ end
 "Real or complex floating point: what Enzyme differentiates."
 isfloatlike(::Type{T}) where {T} = T <: Union{AbstractFloat,Complex{<:AbstractFloat}}
 
-"The input standing in for a recorded intermediate: float arrays `Duplicated`, floats `Active` (`Duplicated` in forward mode), else `Const`."
+"""
+    placeholder_arg(name, v::Value, mode) -> Arg
+
+The input standing in for a recorded intermediate: a float array is `Duplicated` with a
+zero shadow, a float scalar is `Active` (`Duplicated` in forward mode), anything else `Const`.
+"""
 function placeholder_arg(name::Symbol, v::Value, mode::Enzyme.Mode)
     d = v.data
     if d isa Array && isfloatlike(eltype(d))
@@ -70,15 +85,21 @@ function placeholder_arg(name::Symbol, v::Value, mode::Enzyme.Mode)
     return Arg(:Const, name, v, Value[])
 end
 
-"Keep the first `k` entries of `x` along dimension `dim`."
+"The first `k` entries of `x` along dimension `dim`."
 take(x::Array, dim, k) = x[ntuple(d -> d == dim ? (1:k) : Colon(), ndims(x))...]
 
-"Whether a top-level definition brings Enzyme into scope; never worth removing."
+"A `using`/`import` that brings Enzyme into scope; never worth removing."
 is_enzyme_import(d) = d isa Expr && d.head in (:using, :import) && uses(:Enzyme, d)
 
 # ---- structural passes ------------------------------------------------------
 
-"Truncate the entry function after statement `k` and return that statement's value, in bisection order."
+"""
+    remove_suffix(p) -> Proposals
+
+Keep the first `k` statements of the entry function and return the `k`-th's value, for `k` in
+binary-search order.  Under an `Active` return the value must be a real scalar, so an array
+is returned as its `sum` and a complex value as its `abs2`.
+"""
 function remove_suffix(p::Program)
     out = Proposals()
     j = entry(p)
@@ -94,7 +115,7 @@ function remove_suffix(p::Program)
         elseif v.data isa AbstractFloat
             y
         elseif v.data isa Complex{<:AbstractFloat}
-            :(abs2($y))                           # an Active return must be real
+            :(abs2($y))
         elseif v.data isa Array{<:AbstractFloat}
             :(sum($y))
         elseif v.data isa Array{<:Complex{<:AbstractFloat}}
@@ -110,7 +131,13 @@ function remove_suffix(p::Program)
     return out
 end
 
-"Delta debugging over statements at any depth: assignments with recorded values become placeholders, others are deleted."
+"""
+    placeholder_statements(p) -> Proposals
+
+Delta debugging over the statements of every named function at any depth, the entry
+function first.  Each proposal replaces one chunk through [`replace_statements`](@ref);
+a function's last statement is never touched.
+"""
 function placeholder_statements(p::Program)
     out = Proposals()
     e = entry(p)
@@ -131,7 +158,14 @@ function placeholder_statements(p::Program)
     return out
 end
 
-"`p` with statements `targets` of definition `j` turned into placeholders where possible and deleted otherwise."
+"""
+    replace_statements(p, j, targets, as_args) -> Program
+
+Replace the statements `targets` of definition `j`: an assignment with recorded values
+becomes `y = <placeholder>`, anything else is deleted.  With `as_args` the placeholders are
+new parameters of the entry function, passed to the call as inputs; otherwise they are
+top-level constants `P_<function>_<variable>`.
+"""
 function replace_statements(p::Program, j, targets, as_args::Bool)
     d = p.defs[j]
     params = copy(fparams(d))
@@ -165,7 +199,11 @@ function replace_statements(p::Program, j, targets, as_args::Bool)
     return with(replace_def(p, j, d′); consts, call = with(p.call; args))
 end
 
-"Delete every top-level assignment no later statement mentions."
+"""
+    eliminate_dead_code(p) -> Proposals
+
+Per function, delete every top-level assignment no later statement mentions, in one step.
+"""
 function eliminate_dead_code(p::Program)
     out = Proposals()
     for (j, d) in enumerate(p.defs)
@@ -182,7 +220,12 @@ end
 
 const LITERAL_RETURNS = (Expr(:return, nothing), Expr(:return, 0.0))
 
-"Replace each function's last statement by `return nothing` or `return 0.0`; a literal return is terminal."
+"""
+    simplify_result(p) -> Proposals
+
+Replace each function's last statement by `return nothing` or `return 0.0`.  A literal
+return is terminal, and the entry can only return `nothing` under a `Const` activity.
+"""
 function simplify_result(p::Program)
     out = Proposals()
     e = entry(p)
@@ -191,7 +234,6 @@ function simplify_result(p::Program)
         s = stmts(d)
         (isempty(s) || last(s) in LITERAL_RETURNS) && continue
         for new in LITERAL_RETURNS
-            # the entry's result feeds the return activity: `nothing` is only ever `Const`
             j == e && new.args[1] === nothing && !(p.call.ret in (Const, nothing)) && continue
             push!(out, "$(fname(d)): return $(repr(new.args[1]))" => replace_def(p, j, with_body(d, [s[1:end-1]; new])))
         end
@@ -199,7 +241,13 @@ function simplify_result(p::Program)
     return out
 end
 
-"Drop parameters of the entry function its body never mentions, all at once and then one at a time."
+"""
+    remove_unused_args(p) -> Proposals
+
+Drop the entry function's parameters its body never mentions, with the matching call
+arguments: all at once, then one at a time.  Needs a plain positional signature that
+nothing else calls.
+"""
 function remove_unused_args(p::Program)
     out = Proposals()
     j = entry(p)
@@ -221,7 +269,11 @@ function remove_unused_args(p::Program)
     return out
 end
 
-"Delta debugging over top-level definitions other than the entry function and `using Enzyme`."
+"""
+    remove_defs(p) -> Proposals
+
+Delta debugging over top-level definitions other than the entry function and `using Enzyme`.
+"""
 function remove_defs(p::Program)
     out = Proposals()
     idxs = [j for j in eachindex(p.defs) if j != entry(p) && !is_enzyme_import(p.defs[j])]
@@ -233,7 +285,7 @@ function remove_defs(p::Program)
     return out
 end
 
-"Drop placeholder constants no definition mentions any more."
+"Drop each placeholder constant no definition mentions any more."
 function remove_unused_consts(p::Program)
     out = Proposals()
     for (i, (name, _)) in enumerate(p.consts)
@@ -245,7 +297,7 @@ end
 
 # ---- invocation passes ------------------------------------------------------
 
-"Propose the mode without runtime activity, strong zero, and `WithPrimal`, one at a time."
+"The mode without runtime activity, without strong zero, and without `WithPrimal`, one at a time."
 function simplify_mode(p::Program)
     out = Proposals()
     m = p.call.mode
@@ -258,14 +310,14 @@ function simplify_mode(p::Program)
     return out
 end
 
-"Propose a `Const` return activity."
+"A `Const` return activity."
 function simplify_return(p::Program)
     r = p.call.ret
     r === nothing || r === Const ? Proposals() :
         ["return $(nameof(r)) → Const" => with(p; call = with(p.call; ret = Const))]
 end
 
-"Propose making each non-`Const` argument `Const`."
+"Each active argument made `Const`, one at a time."
 function drop_activity(p::Program)
     out = Proposals()
     for (i, a) in enumerate(p.call.args)
@@ -276,7 +328,7 @@ function drop_activity(p::Program)
     return out
 end
 
-"Propose replacing each batched argument by its first shadow."
+"Each batched argument replaced by its unbatched form with the first shadow."
 function unbatch(p::Program)
     out = Proposals()
     for (i, a) in enumerate(p.call.args)
@@ -293,6 +345,7 @@ targets(n) = unique((1, cld(n, 2), n - 1))
 shrink_arg(a::Arg, dim, k) = Arg(a.kind, a.name, mapdata(x -> take(x, dim, k), a.val),
                                  [mapdata(x -> take(x, dim, k), s) for s in a.shadows])
 
+"`p` with each `(argument, dimension)` in `dims` cut to extent `k`."
 function shrink_dims(p::Program, dims::Vector{Tuple{Int,Int}}, k)
     args = copy(p.call.args)
     for (i, d) in dims
@@ -301,7 +354,12 @@ function shrink_dims(p::Program, dims::Vector{Tuple{Int,Int}}, k)
     return with(p; call = with(p.call; args))
 end
 
-"Propose smaller arrays: dimensions sharing an extent shrink together first, then individually."
+"""
+    shrink_arrays(p) -> Proposals
+
+Smaller array arguments.  Dimensions sharing an extent are cut together first, since a size
+several arguments agree on is usually one quantity; then each such dimension on its own.
+"""
 function shrink_arrays(p::Program)
     out = Proposals()
     dims = [(i, d) => n for (i, a) in enumerate(p.call.args) if a.val.data isa Array
@@ -321,12 +379,12 @@ function shrink_arrays(p::Program)
     return out
 end
 
-"The passes in the order the reducer runs them."
+"The passes in the order the reducer runs them: the call first, then the entry's body, its arguments, the other definitions."
 const PASSES = (simplify_mode, simplify_return, remove_suffix, placeholder_statements,
                 eliminate_dead_code, simplify_result, remove_unused_args, drop_activity, unbatch,
                 shrink_arrays, remove_defs, remove_unused_consts)
 
-"One-line size of a program: definitions, statements in the entry function (at any depth), arguments."
+"One line with the number of definitions, statements in the entry function (at any depth) and arguments."
 function size_summary(p::Program)
     j = entry(p)
     n = j === nothing ? "?" : length(all_statements(p.defs[j].args[2]))
