@@ -1,52 +1,37 @@
-"""
-    Class(kind::Symbol, detail::String)
-
-Identity of a failure, as compared by the oracle.  Two runs are the same
-failure when their `kind` is equal; `detail` (the first line of the error
-message) is kept for display only.
-
-Only the exception type takes part in equality on purpose: messages contain
-SSA names, pointers, line numbers and array sizes, all of which legitimately
-change while the program is being shrunk, and matching on them would reject
-valid reductions.
-
-Besides exception type names, `kind` can be `:pass` (no error), `:setup`
-(the candidate failed before reaching the call, e.g. a removed definition
-was still needed), `:crash` (the worker died: LLVM assertion, segfault) or
-`:timeout`.
-"""
+"Identity of a failure: `kind` (exception type, `:pass`, `:setup`, `:crash`, `:timeout`) and `key`; `detail` is for display only."
 struct Class
     kind::Symbol
+    key::String
     detail::String
 end
+Class(kind::Symbol, detail::String = "") = Class(kind, "", detail)
 
-Base.:(==)(a::Class, b::Class) = a.kind == b.kind
+Base.:(==)(a::Class, b::Class) = a.kind == b.kind && a.key == b.key
+Base.hash(c::Class, h::UInt) = hash((c.kind, c.key), h)
 Base.show(io::IO, c::Class) = print(io, c.kind, isempty(c.detail) ? "" : ": " * c.detail)
 
 "The `Class` of a run that raised no error."
-const PASS = Class(:pass, "")
+const PASS = Class(:pass)
 
-"""
-    classify(err::Exception) -> Class
+"`line` with SSA names, hex literals and numbers replaced by placeholders."
+normalize_key(line::AbstractString) =
+    replace(line, r"%\d+" => "%N", r"0x[0-9a-fA-F]+" => "0xX", r"\d+" => "N")
 
-The `Class` of a caught exception: its unparameterised type name plus the
-first line of its message.
-"""
+"The `Class` of a caught exception, with `LoadError`s unwrapped."
 function classify(err::Exception)
-    while err isa LoadError            # include_string wraps what the candidate threw
+    while err isa LoadError
         err = err.error
     end
     msg = Base.invokelatest(sprint, showerror, err)   # showerror methods defined by the candidate itself
-    line = strip(first(split(msg, '\n'; limit = 2)))
-    Class(nameof(typeof(err)), first(line, 160))
+    line = String(strip(first(split(msg, '\n'; limit = 2))))
+    pre = "$(nameof(typeof(err))): "
+    startswith(line, pre) && (line = line[length(pre)+1:end])   # Enzyme's showerror names the type itself
+    typed = (err isa Enzyme.Compiler.EnzymeError || err isa Enzyme.Compiler.CustomRuleError) &&
+            !(err isa Enzyme.Compiler.EnzymeInternalError)
+    return Class(nameof(typeof(err)), typed ? "" : normalize_key(line), first(line, 160))
 end
 
-"""
-    classify_run(thunk) -> Class
-
-Run `thunk()` and classify the outcome: [`PASS`](@ref) or the class of the
-exception it threw.
-"""
+"Run `thunk()` and return `PASS` or the class of the exception it threw."
 classify_run(thunk) = try
     thunk()
     PASS

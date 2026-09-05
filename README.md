@@ -99,7 +99,11 @@ rule, say) is the cause.
 3. **Reduce.** Passes propose simpler programs; an oracle runs each one in
    a fresh module on a persistent worker and reports the failure class
    (the exception type, or `WrongGradient`). A proposal is kept only if the
-   class is unchanged. The passes, in order:
+   class is unchanged. It is also rejected when its primal does not run as
+   a plain program (a deleted statement whose variable is still returned,
+   say), even if Enzyme fails on it the same way, so every checkpoint and
+   the final repro is a program that runs. That check is skipped when the
+   original primal itself fails. The passes, in order:
    - simplify the mode and return activity
    - **truncate the suffix** of the entry function and return an
      intermediate, in binary-search order
@@ -120,21 +124,33 @@ crashes and compile hangs are just failure classes like any other.
 
 ## Limits
 
-- Only code in the script (and files it `include`s) is reduced. Functions
-  from packages stay as calls.
-- The `autodiff` call must reproduce from the script's top-level
-  definitions and its arguments. A closure over locals inside a function
-  is reported as "does not fail in isolation" rather than guessed at.
+- Only code in the script (and files it `include`s with a literal path)
+  is reduced. Functions from packages stay as calls.
+- `autodiff`, `autodiff_deferred` and reverse-mode `gradient` calls are
+  hooked; `jacobian`, `autodiff_thunk` and forward-mode `gradient` are
+  not.
+- The call must reproduce from the script's top-level definitions and its
+  arguments. A closure over locals inside a function is reported as "does
+  not fail in isolation" rather than guessed at.
 - Keyword arguments to `autodiff` are not supported.
+- Only the outermost call is captured. An `autodiff` nested inside the
+  differentiated function is compiled as written, and the functions it
+  differentiates are reduced like any other.
+- Statements are reduced at any nesting depth, but a statement inside a
+  loop is replaced by its first-iteration value.
 - The correctness check covers reverse mode with a scalar return and
   `Duplicated` floating-point array arguments, and needs a primal that does
-  not mutate its arguments.
+  not mutate its arguments. It compares directional derivatives along a
+  few fixed directions; pass `elementwise = true` to `checked_autodiff` in
+  the repro for a per-entry check.
 - Values of user-defined types are embedded as literals when `repr`
   round-trips; otherwise a statement producing one cannot become a
-  placeholder.
+  placeholder. Numeric arrays that are not `Array`s (views, adjoints,
+  ranges) are collected, and the repro notes the original type.
 
 ## Tests
 
 ```
 julia --project -e 'using Pkg; Pkg.test()'
+MWE_E2E=1 julia --project -e 'using Pkg; Pkg.test()'   # also runs minify on the examples (~15 min)
 ```

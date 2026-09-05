@@ -1,18 +1,7 @@
-"""
-    Pool(dir; workers = default_workers(), project = Base.active_project(), timeout = 600.0)
-
-Persistent `Distributed` workers that run candidates.  Each worker loads
-Enzyme once; every candidate is then evaluated in a fresh module of its
-own, so removed definitions are really gone and Enzyme's compiler is
-already warm.  A worker that dies (LLVM assertion, segfault) or exceeds
-`timeout` (killed) is replaced, and each worker is recycled after
-[`RECYCLE_AFTER`](@ref) candidates to bound memory growth from modules
-that can never be freed.
-
-`dir` receives the per-candidate scripts and logs.
-"""
+"Persistent workers running candidates in fresh modules; dead or timed-out workers are replaced, each recycled after `RECYCLE_AFTER` candidates."
 mutable struct Pool
     dir::String
+    cwd::String
     project::String
     timeout::Float64
     pids::Vector{Int}
@@ -26,40 +15,33 @@ default_workers() = max(1, Sys.CPU_THREADS ÷ 2)
 "Candidates a worker runs before being replaced."
 const RECYCLE_AFTER = 40
 
-function Pool(dir; workers = default_workers(), project = Base.active_project(), timeout = 600.0)
-    pool = Pool(dir, project, timeout, Int[], Int[], 0)
+function Pool(dir; cwd = pwd(), workers = default_workers(), project = Base.active_project(), timeout = 600.0)
+    pool = Pool(dir, cwd, project, timeout, Int[], Int[], 0)
     append!(pool.pids, spawn(pool, workers))
     append!(pool.served, zeros(Int, workers))
     return pool
 end
 
-"Start `n` workers with Enzyme and MWE loaded."
+"Start `n` workers with Enzyme and MWE loaded, in the pool's working directory."
 function spawn(pool::Pool, n::Int)
-    pids = addprocs(n; exeflags = "--project=$(pool.project)")
+    pids = addprocs(n; exeflags = "--project=$(pool.project)", dir = pool.cwd)
     @sync for pid in pids
         @async remotecall_wait(Core.eval, pid, Main, :(using Enzyme, MWE))
     end
     return pids
 end
 
-function replace!(pool::Pool, slot::Int)
+function respawn!(pool::Pool, slot::Int)
     pool.pids[slot] = only(spawn(pool, 1))
     pool.served[slot] = 0
 end
 
 shutdown(pool::Pool) = rmprocs(pool.pids; waitfor = 5)
 
-"""
-    remote(pool, slot, f, args...)
-
-Run `f(args...)` on the worker in `slot`.  Returns its result, or a `Class`
-of kind `:crash` or `:timeout` if the worker died or had to be killed; in
-both cases the slot gets a fresh worker.  Errors raised by `f` itself are
-rethrown.
-"""
+"Run `f(args...)` on the worker in `slot`; a `Class` of kind `:crash` or `:timeout` if the worker died or was killed."
 function remote(pool::Pool, slot::Int, f, args...)
     if pool.served[slot] >= RECYCLE_AFTER
-        replace!(pool, slot)
+        respawn!(pool, slot)
     end
     pool.served[slot] += 1
     pid = pool.pids[slot]
@@ -71,13 +53,13 @@ function remote(pool::Pool, slot::Int, f, args...)
     if timedwait(() -> istaskdone(task), pool.timeout; pollint = 0.1) != :ok
         kill(Distributed.worker_from_id(pid).config.process, Base.SIGKILL)
         wait(task)
-        replace!(pool, slot)
+        respawn!(pool, slot)
         return Class(:timeout, "still running after $(pool.timeout)s")
     end
     r = fetch(task)
     if r isa ProcessExitedException
-        replace!(pool, slot)
-        return Class(:crash, "")
+        respawn!(pool, slot)
+        return Class(:crash)
     elseif r isa Exception
         throw(r)
     end
@@ -93,14 +75,7 @@ function logged(f, logfile::String)
     end
 end
 
-"""
-    worker_capture(defs, logfile, check) -> (k, Call, Class) or nothing
-
-Evaluate the script's top-level expressions in the worker's `Main`, with
-`autodiff` calls hooked (see [`CHECK`](@ref) for `check`).  Stops at the
-first expression `k` during which an `autodiff` call failed and returns
-the captured call; `nothing` if the whole script ran without one.
-"""
+"Run the script with `autodiff` hooked; `(k, Call, Class)` for the first failing call, or `nothing`."
 function worker_capture(defs::Vector, logfile::String, check::Symbol)
     CHECK[] = check
     logged(logfile) do
@@ -116,19 +91,18 @@ function worker_capture(defs::Vector, logfile::String, check::Symbol)
     end
 end
 
-"""
-    worker_query(id, setup, call, logfile) -> Class
-
-Evaluate a candidate in a fresh module: `setup` first (a failure there is
-`:setup`, never the target class), then the `call`.
-"""
-function worker_query(id::String, setup::String, call::String, logfile::String)
+"Evaluate a candidate in a fresh module: `setup`, then `primal` if given (a failure in either is `:setup`), then `call`."
+function worker_query(id::String, setup::String, call::String, logfile::String, primal = nothing)
     logged(logfile) do
         m = Module(Symbol(:Candidate_, id))
         try
             Base.include_string(m, setup, "candidate_$id.jl")
         catch err
             return Class(:setup, classify(err).detail)
+        end
+        if primal !== nothing
+            c = classify_run(() -> Base.include_string(m, primal, "candidate_$id.jl"))
+            c == PASS || return Class(:setup, "the primal fails: $c")
         end
         classify_run(() -> Base.include_string(m, call, "candidate_$id.jl"))
     end
@@ -137,24 +111,16 @@ end
 "First recorded value of every instrumented statement, by key; see [`record!`](@ref)."
 const RECORDS = Dict{String,Any}()
 
-"""
-    record!(key, v)
-
-Called by instrumented statements (see [`instrument`](@ref)); keeps the
-first value seen for `key` so that statements inside loops record their
-first iteration.
-"""
+"Keep the first value seen for `key`, so statements in loops record their first iteration."
 record!(key::String, v) = (haskey(RECORDS, key) || (RECORDS[key] = v); v)
+
+# recording is a side effect Enzyme runs but never differentiates
+Enzyme.EnzymeRules.inactive(::typeof(record!), args...) = nothing
 
 "Values with more bytes than this are not recorded."
 const RECORD_MAX_BYTES = 64 * 2^20
 
-"""
-    worker_record(id, setup, primal, logfile) -> (Class, Dict{String,Value})
-
-Run the instrumented primal once in a fresh module and return the recorded
-values, captured relative to that module.
-"""
+"Run the instrumented primal in a fresh module and return its class and the recorded values."
 function worker_record(id::String, setup::String, primal::String, logfile::String)
     empty!(RECORDS)
     logged(logfile) do
@@ -163,7 +129,7 @@ function worker_record(id::String, setup::String, primal::String, logfile::Strin
         class = classify_run(() -> Base.include_string(m, primal, "record_$id.jl"))
         values = Dict{String,Value}()
         for (key, v) in RECORDS
-            big = v isa Array && Base.summarysize(v) > RECORD_MAX_BYTES
+            big = v isa AbstractArray && Base.summarysize(v) > RECORD_MAX_BYTES
             values[key] = big ? Value(nothing, nothing, string(typeof(v))) : Value(v, m)
         end
         empty!(RECORDS)

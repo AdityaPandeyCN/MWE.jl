@@ -1,19 +1,4 @@
-"""
-    MWE
-
-Automatically shrink a failing `Enzyme.autodiff` call to a minimal working
-example, following the design of PyTorch's FX minifier:
-
-1. [`minify`](@ref) runs the script with every `autodiff` call wrapped in a
-   capture hook.  The first call that throws gives the failing invocation.
-2. One instrumented run of the primal records the value of every
-   statement in the user's functions.
-3. Delta debugging shrinks the program while an oracle, running each
-   variant in an isolated worker, confirms the failure class is unchanged.
-   Statements are not merely deleted: they are replaced by inputs holding
-   the recorded values, so downstream code stays type-correct.
-4. The smallest program that still fails is written out as `repro.jl`.
-"""
+"Shrink a failing `Enzyme.autodiff` call to a minimal reproducer; see [`minify`](@ref)."
 module MWE
 
 using Enzyme

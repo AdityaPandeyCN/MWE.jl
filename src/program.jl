@@ -1,16 +1,6 @@
-# The program is the reducer's "graph": the script's top-level expressions
-# plus the captured call.  Nodes are top-level definitions and, inside
-# function definitions, the statements of the body.
+# The program: the script's top-level expressions plus the captured call.
 
-"""
-    Arg
-
-One argument of the captured call: the annotation `kind` (`:Const`,
-`:Active`, `:Duplicated`, `:DuplicatedNoNeed`, `:BatchDuplicated`,
-`:BatchDuplicatedNoNeed`), the variable `name` used for it in generated
-source, the primal `val`, and its `shadows` (none, one, or one per batch
-member).
-"""
+"One argument of the captured call: annotation `kind`, variable `name`, primal `val` and `shadows`."
 struct Arg
     kind::Symbol
     name::Symbol
@@ -18,14 +8,7 @@ struct Arg
     shadows::Vector{Value}
 end
 
-"""
-    Call
-
-The captured `autodiff(mode, f, ret, args...)`.  `head` is how `autodiff`
-was spelled (`autodiff` or `Enzyme.autodiff`), `f` the source expression of
-the function argument (a name, or e.g. `Const(f)`), `ret` the return
-activity type or `nothing` when it was left for Enzyme to infer.
-"""
+"The captured `autodiff(mode, f, ret, args...)`; `ret` is `nothing` when left for Enzyme to infer."
 struct Call
     head::Union{Symbol,Expr}
     mode::Enzyme.Mode
@@ -34,25 +17,12 @@ struct Call
     args::Vector{Arg}
 end
 
-"""
-    Program
-
-What is being reduced.
-
-- `defs`: the script's top-level expressions in order, with `include`s
-  inlined, docstrings stripped and function definitions normalised to
-  `function ... end` form with a block body.
-- `consts`: placeholder constants introduced for statements of callees.
-- `call`: the captured invocation.
-- `values`: the recorded value of each assignment statement, keyed by the
-  statement `Expr` object itself.  Passes rebuild bodies from the same
-  statement objects, so identity survives every edit.
-"""
+"What is being reduced: top-level `defs`, placeholder `consts`, the `call`, and recorded `values` keyed by statement object."
 struct Program
     defs::Vector{Any}
     consts::Vector{Pair{Symbol,Value}}
     call::Call
-    values::IdDict{Any,Value}
+    values::IdDict{Any,Vector{Value}}
 end
 
 with(p::Program; defs = p.defs, consts = p.consts, call = p.call) = Program(defs, consts, call, p.values)
@@ -60,13 +30,7 @@ with(c::Call; mode = c.mode, ret = c.ret, args = c.args) = Call(c.head, mode, c.
 
 # ---- parsing the script -----------------------------------------------------
 
-"""
-    parse_script(file) -> Vector{Any}
-
-Top-level expressions of `file`, with `include("...")` calls replaced by
-the included file's expressions, docstrings stripped, line numbers removed
-and function definitions normalised (see [`normalize`](@ref)).
-"""
+"Top-level expressions of `file`, with literal `include`s inlined, docstrings stripped and definitions normalised."
 function parse_script(file::AbstractString)
     defs = Any[]
     collect_defs!(defs, Meta.parseall(read(file, String); filename = file), file)
@@ -82,6 +46,9 @@ function collect_defs!(defs, e, file)
     elseif e isa Expr && e.head == :call && e.args[1] == :include &&
            length(e.args) == 2 && e.args[2] isa AbstractString
         append!(defs, parse_script(joinpath(dirname(file), e.args[2])))
+    elseif e isa Expr && e.head in (:using, :import) && length(e.args) > 1
+        append!(defs, [Expr(e.head, a) for a in e.args])      # `using A, B`: one definition each
+
     else
         push!(defs, normalize(Base.remove_linenums!(e)))
     end
@@ -92,12 +59,7 @@ strip_doc(e) = e isa Expr && e.head == :macrocall && e.args[1] == GlobalRef(Core
 "A function signature: `f(x)`, `f(x) where T`, `f(x)::T`."
 issig(x) = x isa Expr && (x.head == :call || (x.head in (:where, :(::)) && issig(x.args[1])))
 
-"""
-    normalize(e)
-
-Rewrite `f(x) = body` as `function f(x) body end`, and make every function
-body a block, so passes only ever see one form.
-"""
+"Rewrite `f(x) = body` as `function f(x) body end` with a block body."
 function normalize(e)
     e isa Expr || return e
     if e.head == :(=) && issig(e.args[1])
@@ -126,9 +88,11 @@ function fname(d)
 end
 
 fparams(d) = callpart(d.args[1]).args[2:end]
+"Top-level statements of a function body."
 stmts(d) = d.args[2].args
 
-with_body(d, body::Vector) = Expr(:function, d.args[1], Expr(:block, body...))
+with_body(d, body::Expr) = Expr(:function, d.args[1], body)
+with_body(d, body::Vector) = with_body(d, Expr(:block, body...))
 with_params(d, params::Vector) = Expr(:function, mapcall(c -> Expr(:call, c.args[1], params...), d.args[1]), d.args[2])
 
 "Name bound by a parameter: `x`, `x::T`, `x = 1`, `x...`; `nothing` for anything else."
@@ -136,12 +100,83 @@ param_name(p::Symbol) = p
 param_name(p::Expr) = p.head in (:(::), :kw, :(...)) && length(p.args) >= 1 ? param_name(p.args[1]) : nothing
 param_name(p) = nothing
 
-"An assignment to a plain local, `y = rhs`: the statements that can become placeholders."
-is_assignment(s) = s isa Expr && s.head == :(=) && s.args[1] isa Symbol
-assigned(s) = s.args[1]
+"An assignment to plain locals, `y = rhs` or `a, b = rhs`."
+is_assignment(s) = s isa Expr && s.head == :(=) &&
+    (s.args[1] isa Symbol || (s.args[1] isa Expr && s.args[1].head == :tuple && all(x -> x isa Symbol, s.args[1].args)))
+
+"Names bound by an assignment statement."
+assigned_names(s) = s.args[1] isa Symbol ? [s.args[1]] : Symbol[s.args[1].args...]
 
 "Whether symbol `sym` occurs anywhere in `e`."
 uses(sym::Symbol, e) = e === sym || (e isa Expr && any(a -> uses(sym, a), e.args))
+
+# ---- nested statements ------------------------------------------------------
+
+"The statement blocks nested directly inside `s`: loop and `let` bodies, `if` branches, `begin`, macro and `do` bodies."
+function sub_blocks(s)
+    s isa Expr || return Expr[]
+    isblock(b) = b isa Expr && b.head == :block
+    if s.head in (:for, :while, :let)
+        return Expr[s.args[2]]
+    elseif s.head in (:if, :elseif)
+        out = Expr[]
+        for b in s.args[2:end]
+            isblock(b) ? push!(out, b) : append!(out, sub_blocks(b))   # an `elseif` chain
+        end
+        return out
+    elseif s.head == :block
+        return Expr[s]
+    elseif s.head == :macrocall
+        return isblock(s.args[end]) ? Expr[s.args[end]] : sub_blocks(s.args[end])
+    elseif s.head == :do
+        return Expr[s.args[2].args[2]]
+    end
+    return Expr[]
+end
+
+"`s` with each nested block replaced by `g(block)`."
+function map_sub_blocks(g, s)
+    isempty(sub_blocks(s)) && return s
+    isblock(b) = b isa Expr && b.head == :block
+    if s.head in (:for, :while, :let)
+        return Expr(s.head, s.args[1], g(s.args[2]))
+    elseif s.head in (:if, :elseif)
+        return Expr(s.head, s.args[1], [isblock(b) ? g(b) : map_sub_blocks(g, b) for b in s.args[2:end]]...)
+    elseif s.head == :block
+        return g(s)
+    elseif s.head == :macrocall
+        last = s.args[end]
+        return Expr(:macrocall, s.args[1:end-1]..., isblock(last) ? g(last) : map_sub_blocks(g, last))
+    elseif s.head == :do
+        lam = s.args[2]
+        return Expr(:do, s.args[1], Expr(lam.head, lam.args[1], g(lam.args[2])))
+    end
+    return s
+end
+
+"Every statement in `body` at any depth, in source order."
+function all_statements(body::Expr)
+    out = Any[]
+    for s in body.args
+        push!(out, s)
+        for b in sub_blocks(s)
+            append!(out, all_statements(b))
+        end
+    end
+    return out
+end
+
+"Rebuild `body` with `f` applied to every statement: a replacement, `nothing` to delete, or the statement itself to descend."
+function map_statements(f, body::Expr)
+    out = Any[]
+    for s in body.args
+        r = f(s)
+        r === nothing && continue
+        r === s && (r = map_sub_blocks(b -> map_statements(f, b), s))
+        push!(out, r)
+    end
+    return Expr(:block, out...)
+end
 
 # ---- the entry function ---------------------------------------------------
 
@@ -149,12 +184,7 @@ uses(sym::Symbol, e) = e === sym || (e isa Expr && any(a -> uses(sym, a), e.args
 unwrap_f(f::Symbol) = f
 unwrap_f(f::Expr) = f.head == :call && f.args[1] in (:Const, :Active, :Duplicated, :DuplicatedNoNeed, :BatchDuplicated) ? f.args[2] : f
 
-"""
-    entry(p::Program) -> Union{Int, Nothing}
-
-Index in `p.defs` of the differentiated function's definition, when it is a
-named function with exactly one definition in the script.
-"""
+"Index in `p.defs` of the differentiated function, if it is a named function defined exactly once."
 function entry(p::Program)
     name = unwrap_f(p.call.f)
     name isa Symbol || return nothing
@@ -162,18 +192,20 @@ function entry(p::Program)
     return length(js) == 1 ? only(js) : nothing
 end
 
+"Whether the entry function is mentioned outside its own signature, so its arity cannot change."
+function entry_called_elsewhere(p::Program)
+    j = entry(p)
+    j === nothing && return true
+    name = fname(p.defs[j])
+    return uses(name, p.defs[j].args[2]) || any(d -> d !== p.defs[j] && uses(name, d), p.defs)
+end
+
 # ---- source rendering -------------------------------------------------------
 
-"`\"\"` or `\"Enzyme.\"`, depending on how the script spelled `autodiff`."
-prefix(c::Call) = c.head == :autodiff ? "" : "Enzyme."
+"`\"\"` or `\"Enzyme.\"`, depending on whether the script qualified the call."
+prefix(c::Call) = c.head isa Symbol ? "" : "Enzyme."
 
-"""
-    mode_source(m::Enzyme.Mode, prefix) -> String
-
-Source text that evaluates to `m`.  The common modes are spelled the way a
-user would write them; anything exotic (holomorphic, custom ABI, split
-modes) falls back to `repr`, which is valid but unreadable.
-"""
+"Source text for `m`; exotic modes fall back to `repr`."
 function mode_source(m::Enzyme.Mode, prefix::String = "")
     stripped = Enzyme.EnzymeCore.clear_strong_zero(Enzyme.EnzymeCore.clear_runtime_activity(m))
     base = stripped == Reverse           ? "Reverse" :
@@ -206,26 +238,27 @@ function call_source(c::Call, check::Symbol = :error)
     return "$head(" * join(parts, ", ") * ")"
 end
 
-"The plain `f(x, y)` call, used for the recording run."
-primal_source(c::Call) = "$(unwrap_f(c.f))(" * join(string.(getfield.(c.args, :name)), ", ") * ")"
+"The plain `f(x, y)` call; with `copy`, every argument is `deepcopy`d."
+function primal_source(c::Call; copy::Bool = false)
+    args = [copy ? "deepcopy($(a.name))" : string(a.name) for a in c.args]
+    return "$(unwrap_f(c.f))(" * join(args, ", ") * ")"
+end
 
-"""
-    render(p::Program, store_path::String, check = :error) -> (setup::String, call::String, store::Store)
+"`s` on one line, cut to `n` characters."
+function oneline(s::AbstractString, n::Int = 200)
+    t = join(strip.(split(s, '\n')), " ")
+    return length(t) > n ? first(t, n) * "…" : t
+end
 
-Source for `p`: `setup` defines everything and binds the arguments, `call`
-is the `autodiff` line.  Numeric values too large for literals are placed in
-`store` and loaded by `setup` from `store_path` (a source expression) when
-there are any.  Under the correctness `check`, `setup` also embeds
-[`checked_autodiff`](@ref) and `call` uses it.
-"""
+"Source for `p`: `setup` (definitions and arguments) and the `autodiff` `call`; values too large for literals go in `store`."
 function render(p::Program, store_path::String, check::Symbol = :error)
     store = Store("STORE")
     body = IOBuffer()
     for (name, v) in p.consts
-        println(body, "const ", name, " = ", render(v, string(name), store))
+        println(body, "const ", name, " = ", render(v, string(name), store), type_note(v))
     end
     for a in p.call.args
-        println(body, a.name, " = ", render(a.val, string(a.name), store))
+        println(body, a.name, " = ", render(a.val, string(a.name), store), type_note(a.val))
         for (k, s) in enumerate(a.shadows)
             sname = string(shadow_name(a, k))
             println(body, sname, " = ", iszero_shadow(s) ? "zero($(a.name))" : render(s, sname, store))
@@ -246,20 +279,22 @@ function render(p::Program, store_path::String, check::Symbol = :error)
     return String(take!(setup)), call_source(p.call, check), store
 end
 
-"""
-    write_program(path, p::Program, class::Class, original::String)
+"Write `label * text` as a comment, every line of a multi-line `text` included."
+function comment(io, label, text)
+    for (i, line) in enumerate(split(text, '\n'))
+        println(io, "# ", i == 1 ? label : " "^length(label), line)
+    end
+end
 
-Write `p` as a standalone script at `path`, with its store (if any) at
-`<path stem>_data.jls`.  Used for checkpoints and the final `repro.jl`.
-"""
+"Write `p` as a standalone script at `path`, with its store at `<stem>_data.jls`."
 function write_program(path::String, p::Program, class::Class, original::String, check::Symbol = :error)
     stem = splitext(path)[1]
     setup, call, store = render(p, "joinpath(@__DIR__, $(repr(basename(stem) * "_data.jls")))", check)
     isempty(store.entries) || serialize(stem * "_data.jls", store.entries)
     open(path, "w") do io
         println(io, "# Reduced automatically by MWE.jl — Julia $VERSION, Enzyme $(pkgversion(Enzyme))")
-        println(io, "# Failure: ", class)
-        println(io, "# Reduced from: ", original)
+        comment(io, "Failure: ", string(class))
+        comment(io, "Reduced from: ", oneline(original))
         println(io)
         print(io, setup)
         println(io, call)
@@ -268,12 +303,7 @@ end
 
 # ---- capture ----------------------------------------------------------------
 
-"""
-    Captured
-
-Thrown by [`capture`](@ref) in place of the original error, carrying the
-call expression and the live argument values.
-"""
+"Thrown by `capture` in place of the original error, with the call expression and pre-call argument values."
 struct Captured <: Exception
     expr::Expr
     mode::Enzyme.Mode
@@ -282,47 +312,66 @@ struct Captured <: Exception
     err::Any
 end
 
-"""
-    capture(expr, mode, f, tail...; kw...)
+"`:error` or `:correctness`: which failures the run looks for; set on the workers."
+const CHECK = Ref(:error)
 
-What every `autodiff` call in the script is rewritten to by
-[`hook_autodiff`](@ref).  Runs the real `autodiff`; if it throws, throws
-[`Captured`](@ref) instead so the failing invocation can be recovered.
-The arguments are copied before the call: `autodiff` writes gradients into
-shadows, and the reproducer must start from the values the user passed in.
-"""
-function capture(expr, mode, f, tail...; kw...)
+"Hook for `autodiff`/`autodiff_deferred`: run the real call and rethrow a failure as `Captured` with copies of the arguments."
+function capture(expr, fn, mode, f, tail...; kw...)
+    fn in (Enzyme.autodiff, Enzyme.autodiff_deferred) && !Enzyme.within_autodiff() ||
+        return fn(mode, f, tail...; kw...)
     saved = deepcopy(tail)
     try
         return CHECK[] == :correctness ? checked_autodiff(mode, f, tail...; kw...) :
-                                         autodiff(mode, f, tail...; kw...)
+                                         fn(mode, f, tail...; kw...)
     catch err
         throw(Captured(expr, mode, f, saved, err))
     end
 end
 
-"""
-Which failures the run is looking for: `:error` (the call throws) or
-`:correctness` (the gradient disagrees with finite differences).  Set on
-the workers before capture.
-"""
-const CHECK = Ref(:error)
+"Hook for reverse-mode `Enzyme.gradient` calls, captured in `autodiff` form."
+function capture_gradient(expr, fn, mode, f, xs...; kw...)
+    fn === Enzyme.gradient && mode isa ReverseMode && isempty(kw) && !Enzyme.within_autodiff() ||
+        return fn(mode, f, xs...; kw...)
+    anns = map(x -> x isa Number ? Active(x) : Duplicated(x, Enzyme.make_zero(x)), xs)
+    saved = deepcopy(anns)
+    call = Expr(:call, :autodiff, expr.args[2], expr.args[3], :Active,
+                [Expr(:call, x isa Number ? :Active : :Duplicated, e) for (x, e) in zip(xs, expr.args[4:end])]...)
+    try
+        CHECK[] == :correctness && checked_autodiff(mode, f, Active, anns...)
+        return fn(mode, f, xs...)
+    catch err
+        throw(Captured(call, mode, f, (Active, saved...), err))
+    end
+end
 
-"Rewrite every `autodiff(...)` call in `e` to go through [`capture`](@ref)."
+"Name of the callee in a call's head: `autodiff` for both `autodiff` and `Enzyme.autodiff`."
+callee_name(x::Symbol) = x
+callee_name(x::Expr) = x.head == :. && x.args[1] == :Enzyme && x.args[2] isa QuoteNode ? x.args[2].value : nothing
+callee_name(x) = nothing
+
+"Rewrite `autodiff`, `autodiff_deferred` and `gradient` calls in `e` to go through the capture hooks."
 function hook_autodiff(e)
     e isa Expr || return e
-    if e.head == :call && (e.args[1] == :autodiff || e.args[1] == :(Enzyme.autodiff))
-        return Expr(:call, GlobalRef(MWE, :capture), QuoteNode(e), map(hook_autodiff, e.args[2:end])...)
+    if e.head == :call
+        name = callee_name(e.args[1])
+        hook = name in (:autodiff, :autodiff_deferred) ? :capture :
+               name == :gradient ? :capture_gradient : nothing
+        hook === nothing || return Expr(:call, GlobalRef(MWE, hook), QuoteNode(e), e.args...)
     end
     return Expr(e.head, map(hook_autodiff, e.args)...)
 end
 
-"""
-    Call(c::Captured, m::Module) -> Call
+"Define an anonymous differentiated function as a named top-level function."
+function lift_lambda(p::Program)
+    f = p.call.f
+    f isa Expr && f.head == :-> || return p
+    params = f.args[1] isa Expr && f.args[1].head == :tuple ? f.args[1].args : Any[f.args[1]]
+    name = fresh(:entry, taken_names(p))
+    d = normalize(Expr(:function, Expr(:call, name, params...), f.args[2]))
+    return with(p; defs = [p.defs; d], call = Call(p.call.head, p.call.mode, name, p.call.ret, p.call.args))
+end
 
-Turn a capture into the reducer's representation, with values captured
-relative to module `m`.
-"""
+"Turn a capture into the reducer's representation, with values relative to module `m`."
 function Call(c::Captured, m::Module)
     any(a -> a isa Expr && a.head in (:kw, :parameters), c.expr.args) &&
         error("keyword arguments to autodiff are not supported")
